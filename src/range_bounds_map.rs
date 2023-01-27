@@ -31,7 +31,7 @@ use serde::de::{MapAccess, Visitor};
 use serde::ser::SerializeMap;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use crate::bound_ord::BoundOrd;
+use crate::bound_ord::{EndBound, StartBound};
 use crate::TryFromBounds;
 
 /// An ordered map of non-overlapping [`RangeBounds`] based on [`BTreeMap`].
@@ -131,7 +131,7 @@ pub struct RangeBoundsMap<I, K, V>
 where
 	I: PartialOrd,
 {
-	starts: BTreeMap<BoundOrd<I>, (K, V)>,
+	starts: BTreeMap<StartBound<I>, (K, V)>,
 }
 
 /// An error type to represent a [`RangeBounds`] overlapping another
@@ -360,17 +360,14 @@ where
 			return Err(OverlapError);
 		}
 
-		let start = BoundOrd::start(range_bounds.start_bound());
-		let end = BoundOrd::end(range_bounds.end_bound());
+		let start: StartBound<I> = range_bounds.start_bound().cloned().into();
+		let end: EndBound<I> = range_bounds.end_bound().cloned().into();
 
 		if start > end {
 			panic!("Invalid search range bounds!");
 		}
 
-		self.starts.insert(
-			BoundOrd::start(range_bounds.start_bound().cloned()),
-			(range_bounds, value),
-		);
+		self.starts.insert(start, (range_bounds, value));
 
 		return Ok(());
 	}
@@ -434,18 +431,19 @@ where
 			panic!("Invalid range bounds!");
 		}
 
-		let start = BoundOrd::start(range_bounds.start_bound().cloned());
-		let end = BoundOrd::end(range_bounds.end_bound().cloned());
+		let start: StartBound<_> = range_bounds.start_bound().cloned().into();
+		let end: StartBound<_> = range_bounds.end_bound().cloned().into();
 
-		let start_range_bounds = (
+		let start_range = (
 			//Included is lossless regarding meta-bounds searches
 			//which is what we want
-			Bound::Included(start),
+			Bound::Included(start.clone()),
 			Bound::Included(end),
 		);
+
 		//this range will hold all the ranges we want except possibly
 		//the first RangeBounds in the range
-		let most_range_bounds = self.starts.range(start_range_bounds);
+		let most_range_bounds = self.starts.range(start_range);
 
 		//then we check for this possibly missing range_bounds
 		if let Some(missing_entry @ (_, (possible_missing_range_bounds, _))) =
@@ -453,12 +451,7 @@ where
 			//we don't want equal bounds as they would have be covered
 			//in the previous step and we don't want duplicates
 			self.starts
-					.range((
-						Bound::Unbounded,
-						Bound::Excluded(BoundOrd::start(
-							range_bounds.start_bound().cloned(),
-						)),
-					))
+					.range((Bound::Unbounded, Bound::Excluded(start)))
 					.next_back()
 		{
 			if overlaps(possible_missing_range_bounds, range_bounds) {
@@ -546,7 +539,7 @@ where
 		{
 			return self
 				.starts
-				.get_mut(&BoundOrd::start(overlapping_start_bound.cloned()))
+				.get_mut(&overlapping_start_bound.cloned().into())
 				.map(|(_, value)| value);
 		}
 		return None;
@@ -652,9 +645,9 @@ where
 		//or collectiong anything, may depend on a nicer upstream
 		//BTreeMap remove_range function
 
-		let to_remove: Vec<BoundOrd<I>> = self
+		let to_remove: Vec<StartBound<I>> = self
 			.overlapping(range_bounds)
-			.map(|(key, _)| (BoundOrd::start(key.start_bound().cloned())))
+			.map(|(key, _)| (key.start_bound().cloned().into()))
 			.collect();
 
 		let mut output = Vec::new();
@@ -1081,17 +1074,19 @@ where
 
 		let touching_left_start_bound = self
 			.touching_left(&range_bounds)
-			.map(|x| BoundOrd::start(x.start_bound().cloned()));
+			.map(|x| x.start_bound().cloned());
 		let touching_right_start_bound = self
 			.touching_right(&range_bounds)
-			.map(|x| BoundOrd::start(x.start_bound().cloned()));
+			.map(|x| x.start_bound().cloned());
 
-		let start_bound = match touching_left_start_bound {
-			Some(ref x) => self.starts.get(x).unwrap().0.start_bound().cloned(),
+		let start_bound = match touching_left_start_bound.clone() {
+			Some(x) => {
+				self.starts.get(&x.into()).unwrap().0.start_bound().cloned()
+			}
 			None => range_bounds.start_bound().cloned(),
 		};
-		let end_bound = match touching_right_start_bound {
-			Some(ref x) => self.starts.get(x).unwrap().0.end_bound(),
+		let end_bound = match touching_right_start_bound.clone() {
+			Some(x) => self.starts.get(&x.into()).unwrap().0.end_bound(),
 			None => range_bounds.end_bound(),
 		};
 
@@ -1101,45 +1096,37 @@ where
 			)?;
 
 		// Out with the old!
-		if let Some(ref left) = touching_left_start_bound {
-			self.starts.remove(left);
+		if let Some(left) = touching_left_start_bound {
+			self.starts.remove(&left.into());
 		}
-		if let Some(ref right) = touching_right_start_bound {
-			self.starts.remove(right);
+		if let Some(right) = touching_right_start_bound {
+			self.starts.remove(&right.into());
 		}
 
 		// In with the new!
 		self.starts.insert(
-			BoundOrd::start(new_range_bounds.start_bound().cloned()),
+			new_range_bounds.start_bound().cloned().into(),
 			(new_range_bounds, value),
 		);
 
-		return Ok(&self.starts.get(&BoundOrd::start(start_bound)).unwrap().0);
+		return Ok(&self.starts.get(&start_bound.into()).unwrap().0);
 	}
 	#[parent_tested]
 	fn touching_left(&self, range_bounds: &K) -> Option<&K> {
+		let st: StartBound<_> = range_bounds.start_bound().cloned().into();
 		return self
 			.starts
-			.range((
-				Bound::Unbounded,
-				Bound::Excluded(BoundOrd::start(
-					range_bounds.start_bound().cloned(),
-				)),
-			))
+			.range((Bound::Unbounded, Bound::Excluded(st)))
 			.next_back()
 			.map(|x| &x.1.0)
 			.filter(|x| touches(range_bounds, *x));
 	}
 	#[parent_tested]
 	fn touching_right(&self, range_bounds: &K) -> Option<&K> {
+		let st: StartBound<_> = range_bounds.start_bound().cloned().into();
 		return self
 			.starts
-			.range((
-				Bound::Excluded(BoundOrd::start(
-					range_bounds.start_bound().cloned(),
-				)),
-				Bound::Unbounded,
-			))
+			.range((Bound::Excluded(st), Bound::Unbounded))
 			.next()
 			.map(|x| &x.1.0)
 			.filter(|x| touches(range_bounds, *x));
@@ -1212,11 +1199,11 @@ where
 
 		// In with the new!
 		self.starts.insert(
-			BoundOrd::start(new_range_bounds.start_bound().cloned()),
+			new_range_bounds.start_bound().cloned().into(),
 			(new_range_bounds, value),
 		);
 
-		return Ok(&self.starts.get(&BoundOrd::start(start_bound)).unwrap().0);
+		return Ok(&self.starts.get(&start_bound.into()).unwrap().0);
 	}
 	#[parent_tested]
 	fn overlapping_swell<'a>(
@@ -1225,22 +1212,23 @@ where
 	) -> (Bound<&I>, Bound<&I>) {
 		let mut overlapping = self.overlapping(range_bounds).peekable();
 
-		let start_bound = match overlapping.peek() {
-			Some((first, _)) => std::cmp::min(
-				BoundOrd::start(first.start_bound()),
-				BoundOrd::start(range_bounds.start_bound()),
-			),
-			None => BoundOrd::start(range_bounds.start_bound()),
-		};
-		let end_bound = match overlapping.next_back() {
-			Some((last, _)) => std::cmp::max(
-				BoundOrd::end(last.end_bound()),
-				BoundOrd::end(range_bounds.end_bound()),
-			),
-			None => BoundOrd::start(range_bounds.end_bound()),
-		};
+		let given_start: StartBound<_> = range_bounds.start_bound().into();
+		let given_end: EndBound<_> = range_bounds.end_bound().into();
 
-		return (Bound::from(start_bound), Bound::from(end_bound));
+		let start_bound: StartBound<_> = overlapping
+			.peek()
+			.map(|(f, _)| {
+				std::cmp::min(f.start_bound().into(), given_start.clone())
+			})
+			.unwrap_or(given_start);
+		let end_bound: EndBound<_> = overlapping
+			.next_back()
+			.map(|(l, _)| {
+				std::cmp::max(l.end_bound().into(), given_end.clone())
+			})
+			.unwrap_or(given_end);
+
+		return (start_bound.into(), end_bound.into());
 	}
 
 	/// Adds a new (`RangeBounds`, `Value`) pair to the map and
@@ -1314,12 +1302,10 @@ where
 				.ok_or(TryFromBoundsError)?;
 
 		let _ = self.remove_overlapping(&new_range_bounds);
-		self.starts.insert(
-			BoundOrd::start(start_bound.clone()),
-			(new_range_bounds, value),
-		);
+		self.starts
+			.insert(start_bound.clone().into(), (new_range_bounds, value));
 
-		return Ok(&self.starts.get(&BoundOrd::start(start_bound)).unwrap().0);
+		return Ok(&self.starts.get(&start_bound.into()).unwrap().0);
 	}
 
 	/// Adds a new (`RangeBounds`, `Value`) pair to the map and
@@ -1709,7 +1695,7 @@ where
 /// [`into_iter`]: IntoIterator::into_iter
 /// [`IntoIterator`]: core::iter::IntoIterator
 pub struct IntoIter<I, K, V> {
-	inner: IntoValues<BoundOrd<I>, (K, V)>,
+	inner: IntoValues<StartBound<I>, (K, V)>,
 }
 impl<I, K, V> Iterator for IntoIter<I, K, V> {
 	type Item = (K, V);
@@ -1823,30 +1809,25 @@ where
 {
 	let (a_start, a_end) = expand(a);
 	let (b_start, b_end) = expand(b);
+	let a_start: StartBound<&I> = a_start.into();
+	let a_end: EndBound<&I> = a_end.into();
+	let b_start: StartBound<&I> = b_start.into();
+	let b_end: EndBound<&I> = b_end.into();
 
-	match BoundOrd::start(a_start) < BoundOrd::start(b_start) {
-		true => {
-			match (
-				contains_bound_ord(a, BoundOrd::start(b_start)),
-				contains_bound_ord(a, BoundOrd::end(b_end)),
-			) {
-				(false, false) => Config::LeftFirstNonOverlapping,
-				(true, false) => Config::LeftFirstPartialOverlap,
-				(true, true) => Config::LeftContainsRight,
-				(false, true) => unreachable!(),
-			}
-		}
-		false => {
-			match (
-				contains_bound_ord(b, BoundOrd::start(a_start)),
-				contains_bound_ord(b, BoundOrd::end(a_end)),
-			) {
-				(false, false) => Config::RightFirstNonOverlapping,
-				(true, false) => Config::RightFirstPartialOverlap,
-				(true, true) => Config::RightContainsLeft,
-				(false, true) => unreachable!(),
-			}
-		}
+	match a_start < b_start {
+		// Check: a--b---a--b and a--b---b--a
+		true => match (b_start < a_end, b_end < a_end) {
+			(false, false) => Config::LeftFirstNonOverlapping,
+			(true, false) => Config::LeftFirstPartialOverlap,
+			(true, true) => Config::LeftContainsRight,
+			(false, true) => unreachable!(),
+		},
+		false => match (a_start < b_end, a_end < b_end) {
+			(false, false) => Config::RightFirstNonOverlapping,
+			(true, false) => Config::RightFirstPartialOverlap,
+			(true, true) => Config::RightContainsLeft,
+			(false, true) => unreachable!(),
+		},
 	}
 }
 
@@ -1861,33 +1842,21 @@ enum SortedConfig<I> {
 #[trivial]
 fn sorted_config<'a, I, A, B>(a: &'a A, b: &'a B) -> SortedConfig<&'a I>
 where
-	A: RangeBounds<I>,
-	B: RangeBounds<I>,
-	I: PartialOrd,
+A: RangeBounds<I>,
+  B: RangeBounds<I>,
+  I: PartialOrd,
 {
-    let ae = expand(a);
-    let be = expand(b);
-	match config(a, b) {
-        Config::LeftFirstNonOverlapping => SortedConfig::NonOverlapping(ae, be),
-		Config::LeftFirstPartialOverlap => SortedConfig::Swallowed(ae, be),
-		Config::LeftContainsRight => SortedConfig::Swallowed(ae, be),
+  let ae = expand(a);
+  let be = expand(b);
+  match config(a, b) {
+    Config::LeftFirstNonOverlapping => SortedConfig::NonOverlapping(ae, be),
+    Config::LeftFirstPartialOverlap => SortedConfig::Swallowed(ae, be),
+    Config::LeftContainsRight => SortedConfig::Swallowed(ae, be),
 
-        Config::RightFirstNonOverlapping => SortedConfig::NonOverlapping(be, ae),
-        Config::RightFirstPartialOverlap => SortedConfig::PartialOverlap(be, ae),
-		Config::RightContainsLeft => SortedConfig::Swallowed(be, ae),
-	}
-}
-
-#[trivial]
-fn contains_bound_ord<I, A>(range_bounds: &A, bound_ord: BoundOrd<&I>) -> bool
-where
-	A: RangeBounds<I>,
-	I: PartialOrd,
-{
-	let start_bound_ord = BoundOrd::start(range_bounds.start_bound());
-	let end_bound_ord = BoundOrd::end(range_bounds.end_bound());
-
-	return bound_ord >= start_bound_ord && bound_ord <= end_bound_ord;
+    Config::RightFirstNonOverlapping => SortedConfig::NonOverlapping(be, ae),
+    Config::RightFirstPartialOverlap => SortedConfig::PartialOverlap(be, ae),
+    Config::RightContainsLeft => SortedConfig::Swallowed(be, ae),
+  }
 }
 
 #[derive(Debug)]

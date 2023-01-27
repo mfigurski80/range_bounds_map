@@ -19,9 +19,128 @@ along with range_bounds_map. If not, see <https://www.gnu.org/licenses/>.
 
 use std::cmp::Ordering;
 use std::ops::Bound;
+use std::ops::Bound::{Excluded, Included, Unbounded};
 
 use labels::{parent_tested, tested, trivial};
 use serde::{Deserialize, Serialize};
+
+fn priority_ordering(a: Option<Ordering>) -> Option<Ordering> {
+	match a {
+		Some(Ordering::Equal) => Some(Ordering::Less),
+		other => other,
+	}
+}
+
+/// A bound on start of a range
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone)]
+pub(crate) struct StartBound<T>(Bound<T>);
+
+impl<T> From<StartBound<T>> for Bound<T> {
+	fn from(bound: StartBound<T>) -> Self {
+		match bound {
+			StartBound(bound) => bound,
+		}
+	}
+}
+
+impl<T> From<Bound<T>> for StartBound<T> {
+	fn from(bound: Bound<T>) -> Self {
+		StartBound(bound)
+	}
+}
+
+impl<T: PartialOrd> PartialOrd for StartBound<T> {
+	fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+		match (self, other) {
+			(StartBound(Included(a)), StartBound(Included(b)))
+			| (StartBound(Excluded(a)), StartBound(Excluded(b))) => a.partial_cmp(b),
+			(StartBound(Included(a)), StartBound(Excluded(b))) => {
+				priority_ordering(a.partial_cmp(b))
+			}
+			(StartBound(Excluded(a)), StartBound(Included(b))) => {
+				priority_ordering(b.partial_cmp(a))
+			}
+			(StartBound(Unbounded), StartBound(Unbounded)) => {
+				Some(Ordering::Equal)
+			}
+			(StartBound(Unbounded), _) => Some(Ordering::Less),
+			(_, StartBound(Unbounded)) => Some(Ordering::Greater),
+		}
+	}
+}
+
+impl<T: Ord> Ord for StartBound<T> {
+	fn cmp(&self, other: &Self) -> Ordering {
+		self.partial_cmp(other).unwrap()
+	}
+}
+
+/// A bound on end of a range
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone)]
+pub(crate) struct EndBound<T>(Bound<T>);
+
+impl<T> From<EndBound<T>> for Bound<T> {
+	fn from(bound: EndBound<T>) -> Self {
+		match bound {
+			EndBound(bound) => bound,
+		}
+	}
+}
+
+impl<T> From<Bound<T>> for EndBound<T> {
+	fn from(bound: Bound<T>) -> Self {
+		EndBound(bound)
+	}
+}
+
+impl<T> From<EndBound<T>> for StartBound<T> {
+	fn from(bound: EndBound<T>) -> Self {
+		match bound {
+			EndBound(bound) => StartBound(bound),
+		}
+	}
+}
+
+impl<T: PartialOrd + Clone> PartialOrd for EndBound<T> {
+	fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+		let s: StartBound<T> = (*self).clone().into();
+		let o: StartBound<T> = (*other).clone().into();
+		s.partial_cmp(&o).map(|o| o.reverse())
+	}
+}
+
+impl<T: Ord + Clone> Ord for EndBound<T> {
+	fn cmp(&self, other: &Self) -> Ordering {
+		self.partial_cmp(other).unwrap()
+	}
+}
+
+/// Enable comparisons between Start and End bounds
+impl<T: PartialEq> PartialEq<EndBound<T>> for StartBound<T> {
+	fn eq(&self, other: &EndBound<T>) -> bool {
+		match (self, other) {
+			(StartBound(Included(a)), EndBound(Included(b))) => a == b,
+			_ => false,
+		}
+	}
+}
+
+impl<T: PartialOrd> PartialOrd<EndBound<T>> for StartBound<T> {
+	fn partial_cmp(&self, other: &EndBound<T>) -> Option<Ordering> {
+		match (self, other) {
+			(StartBound(Included(a)), EndBound(Included(b))) => {
+				a.partial_cmp(b)
+			}
+			(StartBound(Included(a)), EndBound(Excluded(b))) => {
+				priority_ordering(a.partial_cmp(b))
+			}
+			(StartBound(Excluded(a)), EndBound(Included(b))) => {
+				priority_ordering(b.partial_cmp(a))
+			}
+			_ => None,
+		}
+	}
+}
 
 /// An newtype of [`Bound`] to implement [`Ord`].
 ///
