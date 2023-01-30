@@ -1810,19 +1810,19 @@ where
 	let (a_start, a_end) = expand(a);
 	let (b_start, b_end) = expand(b);
 	let a_start: StartBound<&I> = a_start.into();
-	let a_end: EndBound<&I> = a_end.into();
 	let b_start: StartBound<&I> = b_start.into();
+	let a_end: EndBound<&I> = a_end.into();
 	let b_end: EndBound<&I> = b_end.into();
 
 	match a_start < b_start {
 		// Check: a--b---a--b and a--b---b--a
-		true => match (b_start < a_end, b_end < a_end) {
+		true => match (b_start <= a_end, b_end <= a_end) {
 			(false, false) => Config::LeftFirstNonOverlapping,
 			(true, false) => Config::LeftFirstPartialOverlap,
 			(true, true) => Config::LeftContainsRight,
 			(false, true) => unreachable!(),
 		},
-		false => match (a_start < b_end, a_end < b_end) {
+		false => match (a_start <= b_end, a_end <= b_end) {
 			(false, false) => Config::RightFirstNonOverlapping,
 			(true, false) => Config::RightFirstPartialOverlap,
 			(true, true) => Config::RightContainsLeft,
@@ -1842,9 +1842,9 @@ enum SortedConfig<I> {
 #[trivial]
 fn sorted_config<'a, I, A, B>(a: &'a A, b: &'a B) -> SortedConfig<&'a I>
 where
-A: RangeBounds<I>,
-  B: RangeBounds<I>,
-  I: PartialOrd,
+    A: RangeBounds<I>,
+    B: RangeBounds<I>,
+    I: PartialOrd,
 {
   let ae = expand(a);
   let be = expand(b);
@@ -2853,6 +2853,18 @@ mod tests {
 				}
 			}
 		}
+	}
+
+	#[test]
+	fn zz_overlaps_tests() {
+		let conf = config(
+			&(Bound::Included(2), Bound::Included(2)),
+			&(Bound::Included(2), Bound::Included(2)),
+		);
+		assert!(
+			conf == Config::LeftContainsRight
+				|| conf == Config::RightContainsLeft
+		);
 	}
 
 	#[test]

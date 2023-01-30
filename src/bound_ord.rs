@@ -101,15 +101,28 @@ impl<T> From<EndBound<T>> for StartBound<T> {
 	}
 }
 
-impl<T: PartialOrd + Clone> PartialOrd for EndBound<T> {
+impl<T: PartialOrd> PartialOrd for EndBound<T> {
 	fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-		let s: StartBound<T> = (*self).clone().into();
-		let o: StartBound<T> = (*other).clone().into();
-		s.partial_cmp(&o).map(|o| o.reverse())
+		match (self, other) {
+			(EndBound(Included(a)), EndBound(Included(b)))
+			| (EndBound(Excluded(a)), EndBound(Excluded(b))) => a.partial_cmp(b),
+			(EndBound(Included(a)), EndBound(Excluded(b))) => {
+				priority_ordering(b.partial_cmp(a))
+			}
+			(EndBound(Excluded(a)), EndBound(Included(b))) => {
+				priority_ordering(a.partial_cmp(b))
+			}
+			(EndBound(Unbounded), EndBound(Unbounded)) => Some(Ordering::Equal),
+			(EndBound(Unbounded), _) => Some(Ordering::Greater),
+			(_, EndBound(Unbounded)) => Some(Ordering::Less),
+		}
+		// let s: StartBound<T> = (*self).clone().into();
+		// let o: StartBound<T> = (*other).clone().into();
+		// s.partial_cmp(&o).map(|o| o.reverse())
 	}
 }
 
-impl<T: Ord + Clone> Ord for EndBound<T> {
+impl<T: Ord> Ord for EndBound<T> {
 	fn cmp(&self, other: &Self) -> Ordering {
 		self.partial_cmp(other).unwrap()
 	}
